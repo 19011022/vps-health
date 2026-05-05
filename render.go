@@ -50,6 +50,11 @@ func renderReport(r Report, width int) string {
 	b.WriteString(renderHealthExtras(r, width-2))
 	b.WriteString("\n")
 
+	if r.SinceLast.HasPrevious {
+		b.WriteString(renderSinceLastBox(r, width-2))
+		b.WriteString("\n")
+	}
+
 	b.WriteString(renderDecisionBox(r, width-2))
 	return b.String()
 }
@@ -283,6 +288,29 @@ func renderHealthExtras(r Report, width int) string {
 			strings.Join(r.System2.FailedUnitList, ", ")) + "\n")
 	}
 	return sectionBox("System Health", StatusInfo, b.String(), width)
+}
+
+func renderSinceLastBox(r Report, width int) string {
+	s := r.SinceLast
+	var b strings.Builder
+
+	header := mutedStyle.Render(fmt.Sprintf("Last run was %s ago.", humanizeDuration(s.Elapsed)))
+	b.WriteString(header + "\n")
+
+	if len(s.Items) == 0 {
+		b.WriteString(mutedStyle.Render("No significant changes.") + "\n")
+		return sectionBox("Since last run", StatusOK, b.String(), width)
+	}
+
+	worst := StatusOK
+	for _, it := range s.Items {
+		if it.Direction > worst && it.Direction <= StatusBad {
+			worst = it.Direction
+		}
+		fmt.Fprintf(&b, "  %-22s %s\n",
+			it.Label, statusText(it.Direction, it.Detail))
+	}
+	return sectionBox("Since last run", worst, b.String(), width)
 }
 
 func renderDecisionBox(r Report, width int) string {

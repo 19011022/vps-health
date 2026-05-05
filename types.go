@@ -63,8 +63,9 @@ type Report struct {
 	Zombies   ZombiesSection
 	System2   ExtraSystem // OOMs, failed units, reboot required, network
 
-	Decision Decision
-	Errors   []string
+	Decision  Decision
+	SinceLast SinceLastSection
+	Errors    []string
 }
 
 type SystemSection struct {
@@ -218,4 +219,16 @@ type Decision struct {
 	Headline string
 	Reasons  []string
 	Actions  []string
+}
+
+type DeltaItem struct {
+	Label     string
+	Detail    string // "↓ 12%  (4.2 GB → 3.7 GB)"
+	Direction Status // OK/Info → benign change, Warn/Bad → concerning
+}
+
+type SinceLastSection struct {
+	HasPrevious bool
+	Elapsed     time.Duration
+	Items       []DeltaItem
 }

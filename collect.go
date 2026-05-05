@@ -97,6 +97,7 @@ func collect() Report {
 	r.Processes = collectProcesses()
 	r.Zombies = collectZombies()
 	r.System2 = collectExtraSystem()
+	r.SinceLast = collectSinceLast(&r)
 
 	r.Decision = decide(&r)
 	return r
@@ -1114,4 +1115,253 @@ func collectExtraSystem() ExtraSystem {
 	}
 
 	return e
+}
+
+// ---------- since-last-run snapshot ----------
+
+// snapshot is the subset of metrics we diff between runs. Kept small so the
+// cache file stays cheap to write and forwards-compatible (extra fields in
+// older caches are simply ignored on read).
+type snapshot struct {
+	CapturedAt      time.Time `json:"captured_at"`
+	Hostname        string    `json:"hostname"`
+	MemTotalMB      uint64    `json:"mem_total_mb"`
+	MemAvailMB      uint64    `json:"mem_avail_mb"`
+	SwapUsedMB      uint64    `json:"swap_used_mb"`
+	DiskUsedGB      float64   `json:"disk_used_gb"`
+	DiskUsedPct     float64   `json:"disk_used_pct"`
+	InodeUsedPct    float64   `json:"inode_used_pct"`
+	FDsUsed         int       `json:"fds_used"`
+	OOMKills24h     int       `json:"oom_kills_24h"`
+	FailedUnits     int       `json:"failed_units"`
+	Connections     int       `json:"connections"`
+	DockerRunning   int       `json:"docker_running"`
+	DockerStopped   int       `json:"docker_stopped"`
+	DockerImages    int       `json:"docker_images"`
+	DockerReclaimGB float64   `json:"docker_reclaim_gb"`
+}
+
+func snapshotFromReport(r *Report) snapshot {
+	s := snapshot{
+		CapturedAt:   r.Collected,
+		Hostname:     r.Hostname,
+		MemTotalMB:   r.Memory.TotalMB,
+		MemAvailMB:   r.Memory.AvailableMB,
+		SwapUsedMB:   r.Memory.SwapUsedMB,
+		DiskUsedGB:   r.Disk.UsedGB,
+		DiskUsedPct:  r.Disk.UsedPct,
+		InodeUsedPct: r.Inodes.UsedPct,
+		FDsUsed:      r.FDs.Used,
+		OOMKills24h:  r.System2.OOMKills24h,
+		FailedUnits:  r.System2.FailedUnits,
+		Connections:  r.System2.Connections,
+	}
+	if r.Docker != nil && r.Docker.Available {
+		s.DockerRunning = r.Docker.Running
+		s.DockerStopped = r.Docker.Stopped
+		s.DockerImages = r.Docker.Images
+		s.DockerReclaimGB = r.Docker.ReclaimGB
+	}
+	return s
+}
+
+func snapshotPath() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "sina", "snapshot.json"), nil
+}
+
+func readSnapshot() (*snapshot, error) {
+	p, err := snapshotPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var s snapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func writeSnapshot(s *snapshot) error {
+	p, err := snapshotPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0o644)
+}
+
+func collectSinceLast(r *Report) SinceLastSection {
+	cur := snapshotFromReport(r)
+	prev, _ := readSnapshot()
+
+	// Always persist the current snapshot for the next run.
+	_ = writeSnapshot(&cur)
+
+	out := SinceLastSection{}
+	if prev == nil || prev.Hostname != cur.Hostname {
+		return out // first run on this host, or cache from another machine
+	}
+	elapsed := cur.CapturedAt.Sub(prev.CapturedAt)
+	if elapsed <= 0 || elapsed > 24*time.Hour {
+		return out // ignore stale snapshots; rates would be misleading
+	}
+
+	out.HasPrevious = true
+	out.Elapsed = elapsed
+	out.Items = computeDeltas(prev, &cur)
+	return out
+}
+
+// computeDeltas returns one DeltaItem per metric that moved enough to be
+// worth showing. Per-metric thresholds filter out noise (jitter from
+// background tasks, GC, etc.).
+func computeDeltas(prev, cur *snapshot) []DeltaItem {
+	var items []DeltaItem
+
+	// RAM available — decrease is concerning.
+	if delta := int64(cur.MemAvailMB) - int64(prev.MemAvailMB); abs64(delta) >= 100 {
+		dir := StatusOK
+		arrow := "↑"
+		if delta < 0 {
+			dir = StatusWarn
+			arrow = "↓"
+		}
+		var pct float64
+		if cur.MemTotalMB > 0 {
+			pct = float64(abs64(delta)) / float64(cur.MemTotalMB) * 100
+		}
+		items = append(items, DeltaItem{
+			Label:     "RAM available",
+			Direction: dir,
+			Detail: fmt.Sprintf("%s %.0f%%  (%s → %s)",
+				arrow, pct, humanMB(prev.MemAvailMB), humanMB(cur.MemAvailMB)),
+		})
+	}
+
+	// Swap used — any meaningful movement is informative.
+	if delta := int64(cur.SwapUsedMB) - int64(prev.SwapUsedMB); abs64(delta) >= 50 {
+		dir := StatusInfo
+		arrow := "↑"
+		if delta < 0 {
+			arrow = "↓"
+			dir = StatusOK
+		} else if cur.SwapUsedMB >= 512 {
+			dir = StatusWarn
+		}
+		items = append(items, DeltaItem{
+			Label:     "Swap used",
+			Direction: dir,
+			Detail: fmt.Sprintf("%s %d MB  (%s → %s)",
+				arrow, abs64(delta), humanMB(prev.SwapUsedMB), humanMB(cur.SwapUsedMB)),
+		})
+	}
+
+	// Disk root — increase is concerning when filling up fast.
+	if d := cur.DiskUsedGB - prev.DiskUsedGB; absf(d) >= 0.5 {
+		dir := StatusOK
+		arrow := "↓"
+		if d > 0 {
+			arrow = "↑"
+			dir = StatusInfo
+			if cur.DiskUsedPct >= 75 {
+				dir = StatusWarn
+			}
+		}
+		items = append(items, DeltaItem{
+			Label:     "Disk root /",
+			Direction: dir,
+			Detail: fmt.Sprintf("%s %.1f GB  (%.1f → %.1f GB)",
+				arrow, absf(d), prev.DiskUsedGB, cur.DiskUsedGB),
+		})
+	}
+
+	// Inode usage — sudden jump = many small files.
+	if d := cur.InodeUsedPct - prev.InodeUsedPct; absf(d) >= 5 {
+		dir := StatusInfo
+		if d > 0 && cur.InodeUsedPct >= 70 {
+			dir = StatusWarn
+		}
+		arrow := "↑"
+		if d < 0 {
+			arrow = "↓"
+		}
+		items = append(items, DeltaItem{
+			Label:     "Inode usage",
+			Direction: dir,
+			Detail: fmt.Sprintf("%s %.0f pp  (%.0f%% → %.0f%%)",
+				arrow, absf(d), prev.InodeUsedPct, cur.InodeUsedPct),
+		})
+	}
+
+	// OOM kills — any new ones since last run is BAD.
+	if cur.OOMKills24h > prev.OOMKills24h {
+		items = append(items, DeltaItem{
+			Label:     "OOM kills (24h)",
+			Direction: StatusBad,
+			Detail: fmt.Sprintf("+%d  (%d → %d)",
+				cur.OOMKills24h-prev.OOMKills24h, prev.OOMKills24h, cur.OOMKills24h),
+		})
+	}
+
+	// Failed systemd units — any change worth surfacing.
+	if cur.FailedUnits != prev.FailedUnits {
+		dir := StatusWarn
+		sign := "+"
+		if cur.FailedUnits < prev.FailedUnits {
+			dir = StatusOK
+			sign = "-"
+		}
+		items = append(items, DeltaItem{
+			Label:     "Failed units",
+			Direction: dir,
+			Detail: fmt.Sprintf("%s%d  (%d → %d)",
+				sign, abs64(int64(cur.FailedUnits)-int64(prev.FailedUnits)),
+				prev.FailedUnits, cur.FailedUnits),
+		})
+	}
+
+	// Docker reclaimable — gradual growth is info; rapid growth still info
+	// (action is already covered by the docker section).
+	if d := cur.DockerReclaimGB - prev.DockerReclaimGB; absf(d) >= 1 {
+		arrow := "↑"
+		if d < 0 {
+			arrow = "↓"
+		}
+		items = append(items, DeltaItem{
+			Label:     "Docker reclaimable",
+			Direction: StatusInfo,
+			Detail: fmt.Sprintf("%s %.1f GB  (%.1f → %.1f GB)",
+				arrow, absf(d), prev.DockerReclaimGB, cur.DockerReclaimGB),
+		})
+	}
+
+	return items
+}
+
+func abs64(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func absf(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
