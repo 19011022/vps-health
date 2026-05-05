@@ -40,7 +40,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(initialModel())
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -55,6 +55,7 @@ func runPlain() {
 			width = w
 		}
 	}
+	fmt.Println(renderHeader(r, width))
 	fmt.Println(renderReport(r, width))
 
 	// Exit code reflects severity for scripting use.

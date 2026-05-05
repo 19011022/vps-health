@@ -112,45 +112,156 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	w := m.width
+	if w == 0 {
+		w = 100
+	}
+	h := m.height
+	if h == 0 {
+		h = 30
+	}
+
 	if m.loading {
 		elapsed := time.Since(m.startedAt).Round(100 * time.Millisecond)
 		body := fmt.Sprintf("%s %s",
 			m.spinner.View(),
 			titleStyle.Render("Gathering system metrics..."))
 		hint := mutedStyle.Render(fmt.Sprintf(
-			"\nRunning df / docker / ps / journalctl. Elapsed: %s\n", elapsed))
-		return "\n" + body + hint
+			"Running df / docker / ps / journalctl. Elapsed: %s", elapsed))
+		content := body + "\n\n" + hint
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 	}
 	if m.report == nil {
 		return mutedStyle.Render("No report.")
 	}
 
-	w := m.width
-	if w == 0 {
-		w = 100
-	}
 	full := renderReport(*m.report, w)
+	lines := strings.Split(full, "\n")
+	total := len(lines)
 
-	// Footer
-	footer := footerStyle.Render(
-		"[q] quit   [r] refresh   [↑/↓] scroll   [space] page down")
-	full = full + "\n" + footer
+	top, topLines := renderTopBar(*m.report, w)
+	bottomLines := 3 // separator + shortcuts + status
 
-	// Apply scroll: viewport height = m.height - 1 (footer baked in already).
-	if m.height > 0 {
-		lines := strings.Split(full, "\n")
-		if m.scroll > len(lines)-1 {
-			m.scroll = max(0, len(lines)-3)
-		}
-		visible := m.height
-		if visible <= 0 {
-			visible = len(lines)
-		}
-		end := m.scroll + visible
-		if end > len(lines) {
-			end = len(lines)
-		}
-		return strings.Join(lines[m.scroll:end], "\n")
+	contentH := h - topLines - bottomLines
+	if contentH < 3 {
+		contentH = 3
 	}
-	return full
+
+	maxScroll := total - contentH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scroll > maxScroll {
+		m.scroll = maxScroll
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+
+	end := m.scroll + contentH
+	if end > total {
+		end = total
+	}
+	visible := append([]string(nil), lines[m.scroll:end]...)
+	for len(visible) < contentH {
+		visible = append(visible, "")
+	}
+
+	bottom := renderBottomBar(m.scroll, end, total, w)
+
+	return top + "\n" + strings.Join(visible, "\n") + "\n" + bottom
+}
+
+// renderTopBar produces the always-visible header. Returns the rendered
+// string (including the trailing separator) and the total number of lines it
+// occupies (2 when it fits on one row, 3 when it wraps on narrow terminals).
+func renderTopBar(r Report, width int) (string, int) {
+	name := accentStyle.Render("vps-health")
+	host := titleStyle.Render(r.Hostname)
+	bdg := badge(r.Decision.Overall)
+	when := mutedStyle.Render(r.Collected.Format("2006-01-02 15:04:05"))
+	dot := mutedStyle.Render("  ·  ")
+	sepLine := mutedStyle.Render(strings.Repeat("─", width))
+
+	full := name + dot + host + " " + bdg + dot + when
+	if lipgloss.Width(full) <= width {
+		return full + "\n" + sepLine, 2
+	}
+
+	// Wrap: keep identity (name + host + status) on the first line, push the
+	// timestamp to a second line so nothing important gets dropped.
+	line1 := name + dot + host + " " + bdg
+	if lipgloss.Width(line1) <= width {
+		return line1 + "\n" + when + "\n" + sepLine, 3
+	}
+
+	// Even narrower: drop the branding, keep host + status badge.
+	line1 = host + " " + bdg
+	return line1 + "\n" + when + "\n" + sepLine, 3
+}
+
+// renderBottomBar is the always-visible footer: separator, shortcuts row, and
+// scroll-state row. Always 3 lines so the viewport size is stable while
+// scrolling. The scroll-state row is the cue first-time users need to realize
+// the view is scrollable.
+func renderBottomBar(start, end, total, width int) string {
+	sepLine := mutedStyle.Render(strings.Repeat("─", width))
+	return sepLine + "\n" + renderShortcutLine(width) + "\n" + renderStatusLine(start, end, total, width)
+}
+
+func renderShortcutLine(width int) string {
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	items := []struct{ k, l string }{
+		{"q", "quit"},
+		{"r", "refresh"},
+		{"↑/↓", "scroll"},
+		{"space", "page"},
+		{"g/G", "top/end"},
+	}
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		parts = append(parts, keyStyle.Render(it.k)+" "+mutedStyle.Render(it.l))
+	}
+	bar := strings.Join(parts, mutedStyle.Render("  ·  "))
+	if lipgloss.Width(bar) <= width {
+		return bar
+	}
+
+	// Compact form for narrow terminals.
+	parts = parts[:0]
+	for _, it := range items[:4] {
+		parts = append(parts, keyStyle.Render(it.k)+" "+mutedStyle.Render(it.l))
+	}
+	return strings.Join(parts, mutedStyle.Render(" · "))
+}
+
+func renderStatusLine(start, end, total, width int) string {
+	var hint string
+	switch {
+	case total == 0:
+		hint = mutedStyle.Render("(no content)")
+	case start == 0 && end >= total:
+		hint = mutedStyle.Render("(report fits on screen)")
+	case end >= total:
+		hint = statusText(StatusOK, "▽ END — at bottom")
+	default:
+		more := total - end
+		hint = statusText(StatusInfo,
+			fmt.Sprintf("▼ %d more line(s) below — press ↓ / space to scroll", more))
+	}
+
+	pos := mutedStyle.Render(fmt.Sprintf("%d–%d / %d", start+1, end, total))
+
+	pad := width - lipgloss.Width(hint) - lipgloss.Width(pos)
+	if pad < 1 {
+		// Try a shorter hint to make room for the position counter.
+		if total > 0 && end < total {
+			hint = statusText(StatusInfo, fmt.Sprintf("▼ %d more", total-end))
+		}
+		pad = width - lipgloss.Width(hint) - lipgloss.Width(pos)
+		if pad < 1 {
+			pad = 1
+		}
+	}
+	return hint + strings.Repeat(" ", pad) + pos
 }

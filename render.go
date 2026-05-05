@@ -18,8 +18,6 @@ func renderReport(r Report, width int) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(renderHeader(r, width))
-	b.WriteString("\n")
 
 	// Two-column layout for system + memory if width allows.
 	colW := (width - 4) / 2
