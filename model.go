@@ -176,7 +176,7 @@ func (m model) View() string {
 // string (including the trailing separator) and the total number of lines it
 // occupies (2 when it fits on one row, 3 when it wraps on narrow terminals).
 func renderTopBar(r Report, width int) (string, int) {
-	name := accentStyle.Render("vps-health")
+	name := accentStyle.Render("sina")
 	host := titleStyle.Render(r.Hostname)
 	bdg := badge(r.Decision.Overall)
 	when := mutedStyle.Render(r.Collected.Format("2006-01-02 15:04:05"))

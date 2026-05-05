@@ -1,14 +1,14 @@
-// vps-health installer redirect.
+// sina installer redirect.
 //
 // Routes:
-//   GET ottomind.ai/vh        → installer script (text/plain so curl|bash works)
-//   GET ottomind.ai/vh/       → same
-//   GET ottomind.ai/vh/v0.1.0 → installer pinned to that version (sets VPS_HEALTH_VERSION)
+//   GET ottomind.ai/sina        → installer script (text/plain so curl|bash works)
+//   GET ottomind.ai/sina/       → same
+//   GET ottomind.ai/sina/v0.2.0 → installer pinned to that version (sets SINA_VERSION)
 //
 // Route binding (in dashboard or wrangler.toml):
-//   pattern: "ottomind.ai/vh*"  zone: "ottomind.ai"
+//   pattern: "ottomind.ai/sina*"  zone: "ottomind.ai"
 
-const REPO = "19011022/vps-health";
+const REPO = "19011022/sina";
 const SCRIPT_URL =
   `https://raw.githubusercontent.com/${REPO}/main/install.sh`;
 
@@ -17,14 +17,14 @@ export default {
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, ""); // strip trailing slash
 
-    if (path !== "/vh" && !path.startsWith("/vh/")) {
+    if (path !== "/sina" && !path.startsWith("/sina/")) {
       return new Response("Not Found", { status: 404 });
     }
 
-    // Optional version pin from path: /vh/v0.1.0 or /vh/0.1.0
+    // Optional version pin from path: /sina/v0.2.0 or /sina/0.2.0
     let pinned = "";
-    if (path.startsWith("/vh/")) {
-      pinned = path.slice("/vh/".length).replace(/^v/, "");
+    if (path.startsWith("/sina/")) {
+      pinned = path.slice("/sina/".length).replace(/^v/, "");
     }
 
     // Fetch upstream installer.
@@ -42,11 +42,11 @@ export default {
     let body = await upstream.text();
 
     // If a version was pinned in the URL, prepend an export so the user
-    // doesn't have to set VPS_HEALTH_VERSION themselves.
+    // doesn't have to set SINA_VERSION themselves.
     if (pinned && /^[0-9][0-9A-Za-z.\-]*$/.test(pinned)) {
       body = body.replace(
         /^#!\/usr\/bin\/env bash\n/,
-        `#!/usr/bin/env bash\nexport VPS_HEALTH_VERSION="${pinned}"\n`,
+        `#!/usr/bin/env bash\nexport SINA_VERSION="${pinned}"\n`,
       );
     }
 

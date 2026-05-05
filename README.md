@@ -1,56 +1,58 @@
-# vps-health
+# sina
 
 Modern TUI health check for Ubuntu VPSes running Docker workloads. Single
 static binary, no runtime deps. Built with [Bubble Tea] + [Lip Gloss].
 
 ```
-$ vps-health
+$ sina
 ```
 
 Tells you in one screen: CPU/load, memory, swap, disk, inodes, top mounts and
-top dirs, Docker (containers + reclaimable space + top-by-CPU/mem), top
-processes, zombies, journal size, OOM kills (24h), failed systemd units,
-reboot-required flag, FD usage. Then a clear OK / WARN / BAD verdict with
-reasons and suggested actions.
+top dirs, Docker (containers + reclaimable space + top-by-CPU/mem + restart-loop
+detection), top processes, zombies, journal size, OOM kills (24h), failed
+systemd units, reboot-required flag, FD usage. Then a clear OK / WARN / BAD
+verdict with reasons and suggested actions.
+
+Named after **İbni Sina** (Avicenna), the 11th-century physician whose *Canon
+of Medicine* was the standard medical reference for centuries.
 
 ## Install
 
 ### One-liner (recommended)
 
 ```bash
-curl -fsSL https://get.ottomind.ai/vh | sudo bash
+curl -fsSL https://get.ottomind.ai/sina | sudo bash
 ```
 
 Pin a specific version:
 
 ```bash
-curl -fsSL https://get.ottomind.ai/vh/0.1.0 | sudo bash
+curl -fsSL https://get.ottomind.ai/sina/0.2.0 | sudo bash
 # or
-VPS_HEALTH_VERSION=0.1.0 curl -fsSL https://get.ottomind.ai/vh | sudo bash
+SINA_VERSION=0.2.0 curl -fsSL https://get.ottomind.ai/sina | sudo bash
 ```
 
 ### Direct from GitHub
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/19011022/vps-health/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/19011022/sina/main/install.sh | sudo bash
 ```
 
 ### Build from source (no GitHub Release needed)
 
 ```bash
-git clone https://github.com/19011022/vps-health
-cd vps-health
+git clone https://github.com/19011022/sina
+cd sina
 ./install-from-source.sh
 ```
 
 ## Usage
 
 ```
-vps-health             # interactive TUI: q quit, r refresh, ↑↓/j/k scroll, space pgdn
-vps-health --plain     # styled but non-interactive (auto-selected when piped)
-vps-health --no-color
-vps-health --version
-vh                     # alias
+sina             # interactive TUI: q quit, r refresh, ↑↓/j/k scroll, space pgdn
+sina --plain     # styled but non-interactive (auto-selected when piped)
+sina --no-color
+sina --version
 ```
 
 When stdout is **not** a TTY (cron, pipes, redirects), the binary
@@ -63,7 +65,7 @@ auto-falls-back to `--plain`.
 - `2` at least one BAD
 
 ```bash
-vps-health --plain >/var/log/vps-health.log || \
+sina --plain >/var/log/sina.log || \
   curl -fsS https://hooks.slack.com/... -d "vps unhealthy on $(hostname)"
 ```
 
@@ -81,6 +83,7 @@ All in one place at the top of `collect.go`:
 | File descriptors | <70% | 70–90% | ≥90% |
 | OOM kills (24h) | 0 | ≥1 | ≥1 + tight RAM |
 | Failed systemd units | 0 | ≥1 | – |
+| Container restart rate | 0 | >10/min | >100/min |
 
 ## Distribution flow
 
@@ -105,10 +108,10 @@ All in one place at the top of `collect.go`:
    └────────┬──────────┘
             │ proxied by
             ▼
-   ┌───────────────────┐
-   │ get.ottomind.ai/vh    │  Cloudflare Worker → install.sh
-   │ (Cloudflare WK)   │  with optional version pin /vh/0.1.0
-   └───────────────────┘
+   ┌────────────────────────┐
+   │ get.ottomind.ai/sina   │  Cloudflare Worker → install.sh
+   │ (Cloudflare WK)        │  with optional version pin /sina/0.2.0
+   └────────────────────────┘
             │
             ▼
         sudo bash
@@ -117,15 +120,15 @@ All in one place at the top of `collect.go`:
 ## Cutting a release
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions builds the four binaries, generates `SHA256SUMS`, and publishes
-a Release. After ~2 minutes, `curl -fsSL https://get.ottomind.ai/vh | sudo bash`
-on any VPS pulls v0.1.0.
+a Release. After ~2 minutes, `curl -fsSL https://get.ottomind.ai/sina | sudo bash`
+on any VPS pulls the new version.
 
-For the `get.ottomind.ai/vh` route to work the first time:
+For the `get.ottomind.ai/sina` route to work the first time:
 
 ```bash
 cd cloudflare
@@ -143,7 +146,7 @@ wrangler deploy
 │   └── release.yml         # cross-arch build + GitHub Release on v* tag
 ├── cloudflare/
 │   ├── README.md           # how to deploy the Worker
-│   ├── worker.js           # get.ottomind.ai/vh → install.sh proxy
+│   ├── worker.js           # get.ottomind.ai/sina → install.sh proxy
 │   └── wrangler.toml
 ├── go.mod
 ├── install.sh              # curl|bash entrypoint (downloads from Releases)

@@ -16,5 +16,5 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: gofmt -l . | tee /tmp/fmt && test ! -s /tmp/fmt
-      - run: go build -ldflags="-s -w" -o /tmp/vps-health .
-      - run: /tmp/vps-health --version
+      - run: go build -ldflags="-s -w" -o /tmp/sina .
+      - run: /tmp/sina --version

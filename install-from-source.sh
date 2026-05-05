@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install vps-health to /usr/local/bin/vps-health.
+# Install sina to /usr/local/bin/sina by building from source.
 #
 # Usage:
-#   ./install.sh            # build & install
-#   ./install.sh --no-go    # don't try to install Go via apt
-#   ./install.sh --no-alias # skip 'vh' alias in ~/.bashrc
+#   ./install-from-source.sh           # build & install
+#   ./install-from-source.sh --no-go   # don't try to install Go via apt
+#   ./install-from-source.sh --prefix=/opt/bin
 #
-# Run from inside the unpacked vps-health source directory. Re-runnable.
+# Run from inside the unpacked sina source directory. Re-runnable.
 
 set -euo pipefail
 
@@ -16,12 +16,10 @@ cd "$SCRIPT_DIR"
 
 # ---- arguments ----
 INSTALL_GO=1
-ADD_ALIAS=1
 INSTALL_DIR="/usr/local/bin"
 for arg in "$@"; do
   case "$arg" in
     --no-go)    INSTALL_GO=0 ;;
-    --no-alias) ADD_ALIAS=0 ;;
     --prefix=*) INSTALL_DIR="${arg#--prefix=}" ;;
     -h|--help)
       sed -n '1,12p' "$0"
@@ -58,7 +56,7 @@ fi
 # ---- ensure source files are here ----
 required=(go.mod main.go collect.go decide.go render.go styles.go model.go types.go)
 for f in "${required[@]}"; do
-  [[ -f "$SCRIPT_DIR/$f" ]] || fail "source file missing: $f (run from the vps-health source directory)"
+  [[ -f "$SCRIPT_DIR/$f" ]] || fail "source file missing: $f (run from the sina source directory)"
 done
 ok "source files found"
 
@@ -84,7 +82,7 @@ export GOFLAGS="${GOFLAGS:-}"
 # with GOPROXY=direct (which talks straight to GitHub) and disable the sumdb.
 build_dir="$(mktemp -d)"
 trap 'rm -rf "$build_dir"' EXIT
-out_bin="$build_dir/vps-health"
+out_bin="$build_dir/sina"
 
 mod_ok=0
 ( cd "$SCRIPT_DIR" && "$GO_BIN" mod tidy ) >/dev/null 2>&1 && mod_ok=1
@@ -98,34 +96,17 @@ info "building..."
 ok "built $(du -h "$out_bin" | awk '{print $1}') binary"
 
 # ---- install ----
-info "installing to $INSTALL_DIR/vps-health..."
-$SUDO install -m 0755 "$out_bin" "$INSTALL_DIR/vps-health"
-ok "$INSTALL_DIR/vps-health"
-
-# ---- alias ----
-if [[ $ADD_ALIAS -eq 1 ]]; then
-  rc="${HOME}/.bashrc"
-  alias_line="alias vh='vps-health'"
-  if [[ -f "$rc" ]] && ! grep -qxF "$alias_line" "$rc"; then
-    echo "" >> "$rc"
-    echo "# vps-health" >> "$rc"
-    echo "$alias_line" >> "$rc"
-    ok "added 'vh' alias to $rc (run 'source $rc' or open a new shell)"
-  elif [[ ! -f "$rc" ]]; then
-    warn "no ~/.bashrc found; skipped alias"
-  else
-    ok "alias already present in $rc"
-  fi
-fi
+info "installing to $INSTALL_DIR/sina..."
+$SUDO install -m 0755 "$out_bin" "$INSTALL_DIR/sina"
+ok "$INSTALL_DIR/sina"
 
 # ---- smoke test ----
-if "$INSTALL_DIR/vps-health" --version >/dev/null 2>&1; then
-  ok "smoke test: $($INSTALL_DIR/vps-health --version)"
+if "$INSTALL_DIR/sina" --version >/dev/null 2>&1; then
+  ok "smoke test: $($INSTALL_DIR/sina --version)"
 else
   warn "binary installed but --version failed"
 fi
 
 echo
-echo "Run:  $(c_green vps-health)        # interactive TUI"
-echo "      $(c_green vps-health --plain) # piped / scripted"
-echo "      $(c_green vh)                # short alias (after sourcing ~/.bashrc)"
+echo "Run:  $(c_green sina)         # interactive TUI"
+echo "      $(c_green sina --plain) # piped / scripted"

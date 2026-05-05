@@ -55,7 +55,7 @@ func renderReport(r Report, width int) string {
 }
 
 func renderHeader(r Report, width int) string {
-	left := accentStyle.Render("vps-health")
+	left := accentStyle.Render("sina")
 	host := titleStyle.Render(r.Hostname)
 	when := mutedStyle.Render(r.Collected.Format("2006-01-02 15:04:05"))
 	line1 := fmt.Sprintf("%s   %s   %s", left, host, when)

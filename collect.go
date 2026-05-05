@@ -769,7 +769,7 @@ func containersCachePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "vps-health", "containers.json"), nil
+	return filepath.Join(base, "sina", "containers.json"), nil
 }
 
 func readContainersCache() (*containersCache, error) {

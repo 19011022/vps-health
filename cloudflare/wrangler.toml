@@ -1,11 +1,11 @@
-name = "vps-health-installer"
+name = "sina-installer"
 main = "worker.js"
 compatibility_date = "2024-09-01"
 
 [[routes]]
-pattern = "get.ottomind.ai/vh"
+pattern = "get.ottomind.ai/sina"
 zone_name = "ottomind.ai"
 
 [[routes]]
-pattern = "get.ottomind.ai/vh/*"
+pattern = "get.ottomind.ai/sina/*"
 zone_name = "ottomind.ai"

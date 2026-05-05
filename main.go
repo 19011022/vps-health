@@ -21,7 +21,7 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Println("vps-health", version)
+		fmt.Println("sina", version)
 		return
 	}
 

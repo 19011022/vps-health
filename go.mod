@@ -1,4 +1,4 @@
-module github.com/19011022/vps-health
+module github.com/19011022/sina
 
 go 1.22
 
