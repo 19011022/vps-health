@@ -95,6 +95,17 @@ func decide(r *Report) Decision {
 				"docker has ~%.1f GB reclaimable", r.Docker.ReclaimGB))
 			d.Actions = append(d.Actions, "review 'docker system df' (script will not prune for you)")
 		}
+		for _, rl := range r.Docker.RestartLoops {
+			if rl.Status >= StatusBad {
+				d.Reasons = append(d.Reasons, fmt.Sprintf(
+					"container '%s' in restart loop — %s", rl.Name, rl.Reason))
+				d.Actions = append(d.Actions, fmt.Sprintf(
+					"docker logs --tail 200 %s ; check restart policy and exit code", rl.Name))
+			} else if rl.Status >= StatusWarn {
+				d.Reasons = append(d.Reasons, fmt.Sprintf(
+					"container '%s' restarting frequently — %s", rl.Name, rl.Reason))
+			}
+		}
 	}
 
 	if r.Zombies.Status >= StatusWarn {

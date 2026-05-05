@@ -154,8 +154,20 @@ type DockerSection struct {
 	TopCPU        []DockerContainer
 	TopMem        []DockerContainer
 	UnhealthyList []string
+	RestartLoops  []ContainerRestart
 	Status        Status
 	Note          string
+}
+
+type ContainerRestart struct {
+	Name         string
+	State        string
+	RestartCount int
+	DeltaCount   int     // restarts since last cached run (0 on first run)
+	RatePerMin   float64 // 0 if no cache or no delta
+	UptimeSec    float64 // since last (re)start; 0 if not running
+	Status       Status
+	Reason       string
 }
 
 type LogsSection struct {

@@ -175,6 +175,23 @@ func renderDockerBox(r Report, width int) string {
 			strings.Join(doc.UnhealthyList, ", ") + "\n")
 	}
 
+	if len(doc.RestartLoops) > 0 {
+		b.WriteString("\n" + statusText(StatusBad, "Restart loops:") + "\n")
+		for _, rl := range doc.RestartLoops {
+			var detail string
+			switch {
+			case rl.RatePerMin > 0:
+				detail = fmt.Sprintf("%.1f/min · total %d", rl.RatePerMin, rl.RestartCount)
+			default:
+				detail = fmt.Sprintf("total %d · state=%s", rl.RestartCount, rl.State)
+			}
+			fmt.Fprintf(&b, "  %-30s %s   %s\n",
+				truncate(rl.Name, 30),
+				statusText(rl.Status, detail),
+				mutedStyle.Render("("+rl.Reason+")"))
+		}
+	}
+
 	if len(doc.TopCPU) > 0 || len(doc.TopMem) > 0 {
 		b.WriteString("\n")
 		b.WriteString(mutedStyle.Render("Top by CPU                          Top by Mem") + "\n")

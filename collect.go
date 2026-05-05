@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -29,20 +30,30 @@ var thresholds = struct {
 	FDBadPct     float64
 	OOMWarn      int
 	UnitsWarn    int
+	// Container restart-loop thresholds (per-minute restart rate).
+	RestartWarnPerMin float64
+	RestartBadPerMin  float64
+	// Per-run absolute count thresholds (for first-run / no-cache detection).
+	RestartCountSuspicious int
+	JustRestartedSec       float64
 }{
-	CPUWarnPct:   70,  // sustained busy
-	CPUBadPct:    100, // saturated
-	MemAvailWarn: 20,
-	MemAvailBad:  10,
-	SwapWarnMB:   512,
-	DiskWarnPct:  75,
-	DiskBadPct:   90,
-	InodeWarnPct: 85,
-	InodeBadPct:  95,
-	FDWarnPct:    70,
-	FDBadPct:     90,
-	OOMWarn:      1,
-	UnitsWarn:    1,
+	CPUWarnPct:             70,  // sustained busy
+	CPUBadPct:              100, // saturated
+	MemAvailWarn:           20,
+	MemAvailBad:            10,
+	SwapWarnMB:             512,
+	DiskWarnPct:            75,
+	DiskBadPct:             90,
+	InodeWarnPct:           85,
+	InodeBadPct:            95,
+	FDWarnPct:              70,
+	FDBadPct:               90,
+	OOMWarn:                1,
+	UnitsWarn:              1,
+	RestartWarnPerMin:      10,
+	RestartBadPerMin:       100,
+	RestartCountSuspicious: 100,
+	JustRestartedSec:       60,
 }
 
 // runCmd runs a binary with a hard timeout and returns combined output.
@@ -426,17 +437,33 @@ func collectDocker() *DockerSection {
 	collectDockerCounts(d)
 	collectDockerSystemDF(d)
 	collectDockerStats(d)
+	collectDockerRestarts(d)
 
-	switch {
-	case d.Unhealthy > 0 || d.ReclaimGB >= 5:
-		d.Status = StatusWarn
-		if d.Unhealthy > 0 {
-			d.Note = fmt.Sprintf("%d unhealthy container(s)", d.Unhealthy)
-		} else {
-			d.Note = fmt.Sprintf("~%.1f GB reclaimable — consider 'docker system prune'", d.ReclaimGB)
+	// Final status: pick the most severe finding and explain it once.
+	d.Status = StatusOK
+	hasBadRestart := false
+	hasWarnRestart := false
+	for _, rl := range d.RestartLoops {
+		if rl.Status >= StatusBad {
+			hasBadRestart = true
 		}
-	default:
-		d.Status = StatusOK
+		if rl.Status >= StatusWarn {
+			hasWarnRestart = true
+		}
+	}
+	switch {
+	case hasBadRestart:
+		d.Status = StatusBad
+		d.Note = fmt.Sprintf("restart loop detected on %d container(s)", len(d.RestartLoops))
+	case d.Unhealthy > 0:
+		d.Status = StatusWarn
+		d.Note = fmt.Sprintf("%d unhealthy container(s)", d.Unhealthy)
+	case hasWarnRestart:
+		d.Status = StatusWarn
+		d.Note = fmt.Sprintf("frequent restarts on %d container(s)", len(d.RestartLoops))
+	case d.ReclaimGB >= 5:
+		d.Status = StatusWarn
+		d.Note = fmt.Sprintf("~%.1f GB reclaimable — consider 'docker system prune'", d.ReclaimGB)
 	}
 	return d
 }
@@ -589,6 +616,191 @@ func collectDockerStats(d *DockerSection) {
 	}
 	d.TopCPU = cap5(cpuRows)
 	d.TopMem = cap5(memRows)
+}
+
+// collectDockerRestarts detects containers stuck in a restart loop. It
+// combines two signals so that even a first run (with no cache) catches the
+// pathological case where a container has thousands of restarts and just
+// (re)started seconds ago — the GlitchTip-on-Coolify scenario.
+//
+//  1. State == "restarting"               → BAD (the daemon itself reports it)
+//  2. Cache delta → restart rate per min  → WARN (>10/min) / BAD (>100/min)
+//  3. RestartCount > N AND Up < 60s       → BAD (heuristic, no cache needed)
+//
+// The cache is best-effort: read failures are ignored, write failures are
+// ignored. A stale cache (>24h) is also ignored to avoid bogus rates.
+func collectDockerRestarts(d *DockerSection) {
+	idsOut, err := runCmd(4*time.Second, "docker", "ps", "-a", "--no-trunc", "-q")
+	if err != nil {
+		return
+	}
+	ids := strings.Fields(strings.TrimSpace(idsOut))
+	if len(ids) == 0 {
+		return
+	}
+
+	args := append([]string{
+		"inspect",
+		"--format",
+		"{{.Id}}\t{{.Name}}\t{{.State.Status}}\t{{.RestartCount}}\t{{.State.StartedAt}}",
+	}, ids...)
+	out, err := runCmd(8*time.Second, "docker", args...)
+	if err != nil {
+		return
+	}
+
+	type currentContainer struct {
+		ID, Name, State string
+		RestartCount    int
+		StartedAt       time.Time
+	}
+	var current []currentContainer
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) < 5 {
+			continue
+		}
+		rc, _ := strconv.Atoi(strings.TrimSpace(f[3]))
+		startedAt, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(f[4]))
+		current = append(current, currentContainer{
+			ID:           strings.TrimSpace(f[0]),
+			Name:         strings.TrimPrefix(strings.TrimSpace(f[1]), "/"),
+			State:        strings.TrimSpace(f[2]),
+			RestartCount: rc,
+			StartedAt:    startedAt,
+		})
+	}
+
+	prev, _ := readContainersCache()
+	now := time.Now()
+
+	// Persist current state for the next run, regardless of what we flag now.
+	newCache := containersCache{
+		CapturedAt: now,
+		Containers: make(map[string]cachedContainer, len(current)),
+	}
+	for _, c := range current {
+		newCache.Containers[c.ID] = cachedContainer{
+			RestartCount: c.RestartCount,
+			CapturedAt:   now,
+		}
+	}
+	_ = writeContainersCache(&newCache)
+
+	for _, c := range current {
+		var (
+			st        Status
+			reason    string
+			delta     int
+			rate      float64
+			uptimeSec float64
+		)
+		if !c.StartedAt.IsZero() && c.State == "running" {
+			uptimeSec = now.Sub(c.StartedAt).Seconds()
+		}
+
+		if c.State == "restarting" {
+			st = StatusBad
+			reason = "state=restarting"
+		}
+		if st < StatusBad &&
+			c.RestartCount > thresholds.RestartCountSuspicious &&
+			c.State == "running" &&
+			uptimeSec > 0 && uptimeSec < thresholds.JustRestartedSec {
+			st = StatusBad
+			reason = fmt.Sprintf("restart_count=%d, just (re)started %.0fs ago",
+				c.RestartCount, uptimeSec)
+		}
+		if prev != nil {
+			if cached, ok := prev.Containers[c.ID]; ok {
+				elapsed := now.Sub(cached.CapturedAt)
+				if elapsed > 0 && elapsed < 24*time.Hour {
+					delta = c.RestartCount - cached.RestartCount
+					if delta > 0 {
+						rate = float64(delta) / elapsed.Minutes()
+						switch {
+						case rate > thresholds.RestartBadPerMin && st < StatusBad:
+							st = StatusBad
+							reason = fmt.Sprintf("%.0f restarts/min (Δ%d in %s)",
+								rate, delta, elapsed.Round(time.Second))
+						case rate > thresholds.RestartWarnPerMin && st < StatusWarn:
+							st = StatusWarn
+							reason = fmt.Sprintf("%.1f restarts/min (Δ%d in %s)",
+								rate, delta, elapsed.Round(time.Second))
+						}
+					}
+				}
+			}
+		}
+
+		if st >= StatusWarn {
+			d.RestartLoops = append(d.RestartLoops, ContainerRestart{
+				Name:         c.Name,
+				State:        c.State,
+				RestartCount: c.RestartCount,
+				DeltaCount:   delta,
+				RatePerMin:   rate,
+				UptimeSec:    uptimeSec,
+				Status:       st,
+				Reason:       reason,
+			})
+		}
+	}
+
+	sort.Slice(d.RestartLoops, func(i, j int) bool {
+		return d.RestartLoops[i].Status > d.RestartLoops[j].Status
+	})
+}
+
+// --- container restart-count cache ---
+
+type cachedContainer struct {
+	RestartCount int       `json:"restart_count"`
+	CapturedAt   time.Time `json:"captured_at"`
+}
+
+type containersCache struct {
+	CapturedAt time.Time                  `json:"captured_at"`
+	Containers map[string]cachedContainer `json:"containers"`
+}
+
+func containersCachePath() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "vps-health", "containers.json"), nil
+}
+
+func readContainersCache() (*containersCache, error) {
+	p, err := containersCachePath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var c containersCache
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func writeContainersCache(c *containersCache) error {
+	p, err := containersCachePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0o644)
 }
 
 // parseMemMB parses Docker mem strings like "12.34MiB", "1.5GiB", "200KiB" into MB.
