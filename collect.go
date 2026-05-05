@@ -36,6 +36,8 @@ var thresholds = struct {
 	// Per-run absolute count thresholds (for first-run / no-cache detection).
 	RestartCountSuspicious int
 	JustRestartedSec       float64
+	// Swap pressure: rate (KB/s) above which swap-in/out is considered active.
+	SwapActiveKBs float64
 }{
 	CPUWarnPct:             70,  // sustained busy
 	CPUBadPct:              100, // saturated
@@ -54,6 +56,7 @@ var thresholds = struct {
 	RestartBadPerMin:       100,
 	RestartCountSuspicious: 100,
 	JustRestartedSec:       60,
+	SwapActiveKBs:          1, // below 1 KB/s is treated as "no swapping"
 }
 
 // runCmd runs a binary with a hard timeout and returns combined output.
@@ -236,7 +239,144 @@ func collectMemory() MemorySection {
 	default:
 		m.SwapStatus = StatusOK
 	}
+
+	collectSwapPressure(&m)
 	return m
+}
+
+// collectSwapPressure reads /proc/vmstat to distinguish "swap is occupied"
+// from "swap is being actively used". Cold pages can sit in swap long after
+// any pressure is gone (post-reboot residue, idle long-running daemons).
+// If there's no measurable swap-in/out activity, the high occupancy is no
+// longer a sign of pressure, so we demote SwapStatus to Info.
+func collectSwapPressure(m *MemorySection) {
+	if m.SwapTotalMB == 0 {
+		return
+	}
+	in, out, ok := readVmstatSwap()
+	if !ok {
+		return
+	}
+	now := time.Now()
+	pageKB := uint64(os.Getpagesize() / 1024)
+	if pageKB == 0 {
+		pageKB = 4
+	}
+
+	prev, _ := readSwapCache()
+	_ = writeSwapCache(&swapCache{
+		CapturedAt: now,
+		PswpIn:     in,
+		PswpOut:    out,
+	})
+
+	if prev == nil {
+		return
+	}
+	elapsed := now.Sub(prev.CapturedAt)
+	if elapsed <= 0 || elapsed > 24*time.Hour {
+		return
+	}
+	secs := elapsed.Seconds()
+
+	if in >= prev.PswpIn {
+		m.SwapInRateKBs = float64((in-prev.PswpIn)*pageKB) / secs
+	}
+	if out >= prev.PswpOut {
+		m.SwapOutRateKBs = float64((out-prev.PswpOut)*pageKB) / secs
+	}
+	m.SwapMeasured = true
+
+	// Quiet if both rates are below threshold (cold pages).
+	quiet := m.SwapInRateKBs < thresholds.SwapActiveKBs &&
+		m.SwapOutRateKBs < thresholds.SwapActiveKBs
+
+	if quiet {
+		if m.SwapStatus >= StatusWarn {
+			m.SwapStatus = StatusInfo
+			m.SwapNote = fmt.Sprintf(
+				"%d MB occupied but no active swapping (cold pages — not under pressure)",
+				m.SwapUsedMB)
+		}
+		return
+	}
+
+	// Active swapping — keep occupancy-driven severity and explain the rate.
+	m.SwapNote = fmt.Sprintf(
+		"active swap-in %.0f KB/s · swap-out %.0f KB/s",
+		m.SwapInRateKBs, m.SwapOutRateKBs)
+}
+
+// readVmstatSwap returns cumulative pswpin/pswpout counters (in pages).
+func readVmstatSwap() (in, out uint64, ok bool) {
+	data, err := os.ReadFile("/proc/vmstat")
+	if err != nil {
+		return 0, 0, false
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	gotIn, gotOut := false, false
+	for scanner.Scan() {
+		f := strings.Fields(scanner.Text())
+		if len(f) < 2 {
+			continue
+		}
+		switch f[0] {
+		case "pswpin":
+			in, _ = strconv.ParseUint(f[1], 10, 64)
+			gotIn = true
+		case "pswpout":
+			out, _ = strconv.ParseUint(f[1], 10, 64)
+			gotOut = true
+		}
+	}
+	return in, out, gotIn && gotOut
+}
+
+// --- swap pressure cache ---
+
+type swapCache struct {
+	CapturedAt time.Time `json:"captured_at"`
+	PswpIn     uint64    `json:"pswpin"`
+	PswpOut    uint64    `json:"pswpout"`
+}
+
+func swapCachePath() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "sina", "swap.json"), nil
+}
+
+func readSwapCache() (*swapCache, error) {
+	p, err := swapCachePath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var c swapCache
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func writeSwapCache(c *swapCache) error {
+	p, err := swapCachePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0o644)
 }
 
 // ---------- disk ----------

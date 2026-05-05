@@ -78,20 +78,24 @@ type SystemSection struct {
 }
 
 type MemorySection struct {
-	TotalMB     uint64
-	UsedMB      uint64
-	FreeMB      uint64
-	AvailableMB uint64
-	BuffersMB   uint64
-	CachedMB    uint64
-	UsedPct     float64
-	AvailPct    float64
-	SwapTotalMB uint64
-	SwapUsedMB  uint64
-	SwapPct     float64
-	Status      Status
-	SwapStatus  Status
-	Note        string
+	TotalMB        uint64
+	UsedMB         uint64
+	FreeMB         uint64
+	AvailableMB    uint64
+	BuffersMB      uint64
+	CachedMB       uint64
+	UsedPct        float64
+	AvailPct       float64
+	SwapTotalMB    uint64
+	SwapUsedMB     uint64
+	SwapPct        float64
+	SwapInRateKBs  float64 // pages swapped IN per second × pageSize / 1024
+	SwapOutRateKBs float64 // pages swapped OUT per second × pageSize / 1024
+	SwapMeasured   bool    // true once we have a previous sample to diff against
+	Status         Status
+	SwapStatus     Status
+	Note           string
+	SwapNote       string
 }
 
 type DiskSection struct {

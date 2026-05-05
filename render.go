@@ -101,6 +101,13 @@ func renderMemoryBox(r Report, width int) string {
 		fmt.Fprintf(&b, "Swap:      %s / %s  (%s)\n",
 			humanMB(m.SwapUsedMB), humanMB(m.SwapTotalMB),
 			statusText(m.SwapStatus, fmt.Sprintf("%.0f%%", m.SwapPct)))
+		if m.SwapMeasured {
+			fmt.Fprintf(&b, "Swap I/O:  in %.1f KB/s   out %.1f KB/s\n",
+				m.SwapInRateKBs, m.SwapOutRateKBs)
+		}
+		if m.SwapNote != "" {
+			b.WriteString(mutedStyle.Render(m.SwapNote) + "\n")
+		}
 	} else {
 		fmt.Fprintf(&b, "Swap:      none\n")
 	}

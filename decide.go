@@ -41,7 +41,8 @@ func decide(r *Report) Decision {
 	bump(r.Memory.SwapStatus)
 	if r.Memory.SwapStatus >= StatusWarn && r.Memory.SwapUsedMB > 0 {
 		d.Reasons = append(d.Reasons, fmt.Sprintf(
-			"swap usage %d MB — system under memory pressure", r.Memory.SwapUsedMB))
+			"swap usage %d MB with active swap-in %.0f KB/s — under memory pressure",
+			r.Memory.SwapUsedMB, r.Memory.SwapInRateKBs))
 		if r.Memory.SwapStatus == StatusBad {
 			d.Actions = append(d.Actions, "RAM upgrade strongly recommended (heavy swapping)")
 		}
